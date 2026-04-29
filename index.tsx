@@ -1,177 +1,126 @@
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import * as Speech from 'expo-speech';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Button,
-  Image,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+  View, Text, StyleSheet, TouchableOpacity,
+  Image, ActivityIndicator, Alert, ScrollView
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 
-export default function CameraScreen() {
-  const cameraRef = useRef<any>(null);
-  const [permission, requestPermission] = useCameraPermissions();
-  const [ip, setIp] = useState('');
-  const [port, setPort] = useState('8080');
+export default function HomeScreen() {
   const [image, setImage] = useState<string | null>(null);
-  const [processedImage, setProcessedImage] = useState<string | null>(null);
-  const [plates, setPlates] = useState<string[]>([]);
+  const [plate, setPlate] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const apiUrl = ip && port ? `http://${ip}:${port}` : '';
+  const SERVER_URL = "http://3.80.139.188:8720/predict/";
 
-  useEffect(() => {
-    if (!permission) {
-      requestPermission();
-    }
-  }, [permission]);
+  const pickImage = async (camera: boolean) => {
+    const permission = camera
+      ? await ImagePicker.requestCameraPermissionsAsync()
+      : await ImagePicker.requestMediaLibraryPermissionsAsync();
 
-  const handleCapture = async () => {
-    if (!cameraRef.current) return;
-    if (!ip) {
-      Alert.alert('Error', 'Por favor ingresa la dirección IP del servidor.');
+    if (!permission.granted) {
+      Alert.alert("Permiso denegado");
       return;
     }
 
+    const result = camera
+      ? await ImagePicker.launchCameraAsync({ quality: 1 })
+      : await ImagePicker.launchImageLibraryAsync({ quality: 1 });
+
+    if (!result.canceled) {
+      const uri = result.assets[0].uri;
+      setImage(uri);
+      sendToServer(uri);
+    }
+  };
+
+  const clearAll = () => {
+    setImage(null);
+    setPlate("");
+    setLoading(false);
+  };
+
+  const sendToServer = async (uri: string) => {
+    setLoading(true);
+    setPlate("");
+
     try {
-      setLoading(true);
-      const photo = await cameraRef.current.takePictureAsync({ base64: true });
-      setImage(photo.uri);
-      setPlates([]);
-      setProcessedImage(null);
+      const formData = new FormData();
+      const fileName = uri.split('/').pop() || 'photo.jpg';
 
-      const fullUrl = `${apiUrl.endsWith('/') ? apiUrl.slice(0, -1) : apiUrl}/predict/`;
-      console.log('📤 Enviando imagen base64 a:', fullUrl);
-
-      const formBody = new URLSearchParams();
-      formBody.append('image_base64', photo.base64);
-
-      const response = await fetch(fullUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: formBody.toString(),
+      // @ts-ignore
+      formData.append('file', {
+        uri,
+        name: fileName,
+        type: 'image/jpeg',
       });
 
-      if (!response.ok) {
-        const text = await response.text();
-        console.error('❌ Error HTTP:', response.status, text);
-        Alert.alert('Error HTTP', `Código: ${response.status}`);
-        Speech.speak('Ocurrió un error al contactar el servidor.');
-        return;
-      }
+      const res = await fetch(SERVER_URL, {
+        method: 'POST',
+        body: formData,
+        headers: { Accept: 'application/json' },
+      });
 
-      const data = await response.json();
-      console.log('📥 Respuesta del servidor:', data);
+      const data = await res.json();
 
-      if (data?.placas && data.placas.length > 0) {
-        const detected = data.placas;
-        setPlates(detected);
+      if (data.success) {
+        setPlate(data.placas?.[0] || "No detectada");
 
         if (data.image) {
-          setProcessedImage(`data:image/jpeg;base64,${data.image}`);
+          setImage(`data:image/jpeg;base64,${data.image}`);
         }
-
-        const textToSpeak =
-          detected.length === 1
-            ? `La placa detectada es ${detected[0].split('').join(' ')}`
-            : `Se detectaron ${detected.length} placas: ${detected.join(', ')}`;
-
-        if (Platform.OS !== 'web') {
-          Speech.speak(textToSpeak, { language: 'es-ES' });
-        }
-      } else if (data?.placas?.length === 0) {
-        if (Platform.OS !== 'web') Speech.speak('No se detectaron placas.');
-        Alert.alert('Resultado', 'No se detectaron placas.');
-        setPlates([]);
-        setProcessedImage(null);
-      } else if (data?.error) {
-        Alert.alert('Error del servidor', data.error);
-        if (Platform.OS !== 'web') Speech.speak('Ocurrió un error en el servidor.');
       } else {
-        console.warn('⚠️ Respuesta inesperada:', data);
-        Alert.alert('Respuesta inesperada', JSON.stringify(data));
+        setPlate("Error en detección");
       }
-    } catch (error) {
-      console.error('❌ Error enviando imagen:', error);
-      Alert.alert('Error', 'No se pudo conectar al servidor.');
-      if (Platform.OS !== 'web') Speech.speak('No se pudo conectar al servidor.');
+
+    } catch (e) {
+      Alert.alert("Error", "Servidor caído o lento");
     } finally {
       setLoading(false);
     }
   };
 
-  if (!permission) {
-    return (
-      <View style={styles.container}>
-        <Text>Solicitando permisos...</Text>
-      </View>
-    );
-  }
-
-  if (!permission.granted) {
-    return (
-      <View style={styles.container}>
-        <Text>Se necesita permiso para usar la cámara.</Text>
-        <Button title="Conceder permiso" onPress={requestPermission} />
-      </View>
-    );
-  }
-
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.label}>Dirección IP del servidor:</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Ej: 192.168.1.45"
-        value={ip}
-        onChangeText={setIp}
-      />
 
-      <Text style={styles.label}>Puerto:</Text>
-      <TextInput
-        style={styles.input}
-        placeholder="8080"
-        value={port}
-        onChangeText={setPort}
-        keyboardType="numeric"
-      />
+      <Text style={styles.title}>🚗 Detector de Placas</Text>
 
-      <CameraView ref={cameraRef} style={styles.camera} facing="back" />
-      <Button title="Tomar foto" onPress={handleCapture} color="#007AFF" />
+      {/* 🔥 IMAGEN GRANDE */}
+      <View style={styles.imageBox}>
+        {image ? (
+          <Image source={{ uri: image }} style={styles.image} resizeMode="contain" />
+        ) : (
+          <Text style={styles.placeholder}>Selecciona una imagen</Text>
+        )}
+      </View>
 
-      {loading && <ActivityIndicator size="large" color="#007AFF" style={{ marginTop: 20 }} />}
+      {/* 🔥 RESULTADO */}
+      <View style={styles.result}>
+        {loading ? (
+          <ActivityIndicator size="large" />
+        ) : (
+          <>
+            <Text style={styles.label}>PLACA DETECTADA</Text>
+            <Text style={styles.plate}>{plate || "---"}</Text>
+          </>
+        )}
+      </View>
 
-      {image && (
-        <View style={styles.imageContainer}>
-          <Text style={styles.label}>📷 Imagen capturada:</Text>
-          <Image source={{ uri: image }} style={styles.image} />
-        </View>
-      )}
+      {/* 🔥 BOTONES */}
+      <View style={styles.buttons}>
+        <TouchableOpacity style={styles.btn} onPress={() => pickImage(true)}>
+          <Text style={styles.btnText}>📷 Cámara</Text>
+        </TouchableOpacity>
 
-      {processedImage && (
-        <View style={styles.imageContainer}>
-          <Text style={styles.label}>🖼️ Imagen procesada por el servidor:</Text>
-          <Image source={{ uri: processedImage }} style={styles.image} resizeMode="contain" />
-        </View>
-      )}
+        <TouchableOpacity style={[styles.btn, styles.green]} onPress={() => pickImage(false)}>
+          <Text style={styles.btnText}>🖼️ Galería</Text>
+        </TouchableOpacity>
+      </View>
 
-      {plates.length > 0 && (
-        <View style={styles.resultContainer}>
-          <Text style={styles.label}>🚘 Placas detectadas:</Text>
-          {plates.map((p, i) => (
-            <Text key={i} style={styles.plateText}>{p}</Text>
-          ))}
-        </View>
-      )}
+      {/* 🔥 BOTÓN LIMPIAR */}
+      <TouchableOpacity style={styles.clearBtn} onPress={clearAll}>
+        <Text style={styles.clearText}>🧹 Limpiar</Text>
+      </TouchableOpacity>
+
     </ScrollView>
   );
 }
@@ -179,53 +128,86 @@ export default function CameraScreen() {
 const styles = StyleSheet.create({
   container: {
     flexGrow: 1,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    backgroundColor: '#f5f5f5',
-    padding: 16,
+    padding: 20,
+    backgroundColor: "#F5F7FA"
   },
-  label: {
-    fontWeight: 'bold',
-    marginBottom: 6,
-    color: '#333',
-  },
-  input: {
-    width: '90%',
-    height: 40,
-    borderColor: '#ccc',
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    marginBottom: 10,
-    backgroundColor: '#fff',
-  },
-  camera: {
-    width: '100%',
-    height: 400,
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: 16,
-  },
-  imageContainer: {
-    marginTop: 16,
-    alignItems: 'center',
-  },
-  image: {
-    width: 300,
-    height: 200,
-    borderRadius: 10,
-  },
-  resultContainer: {
-    marginTop: 20,
-    backgroundColor: '#007AFF20',
-    padding: 12,
-    borderRadius: 8,
-    width: '90%',
-  },
-  plateText: {
+
+  title: {
     fontSize: 22,
-    fontWeight: 'bold',
-    color: '#007AFF',
-    textAlign: 'center',
+    fontWeight: "bold",
+    textAlign: "center",
+    marginBottom: 15
   },
+
+  // 🔥 MÁS GRANDE Y PROPORCIONAL
+  imageBox: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    overflow: "hidden",
+    height: 420,   // 👈 antes 300 → ahora más grande
+    marginBottom: 20,
+    justifyContent: "center"
+  },
+
+  image: {
+    width: "100%",
+    height: "100%"
+  },
+
+  placeholder: {
+    textAlign: "center",
+    color: "#aaa"
+  },
+
+  result: {
+    alignItems: "center",
+    marginBottom: 20
+  },
+
+  label: {
+    fontSize: 12,
+    color: "#777"
+  },
+
+  plate: {
+    fontSize: 40,  // 👈 más grande
+    fontWeight: "bold",
+    color: "#2196F3"
+  },
+
+  buttons: {
+    flexDirection: "row",
+    gap: 10
+  },
+
+  btn: {
+    flex: 1,
+    backgroundColor: "#2196F3",
+    padding: 15,
+    borderRadius: 10,
+    alignItems: "center"
+  },
+
+  green: {
+    backgroundColor: "#4CAF50"
+  },
+
+  btnText: {
+    color: "#fff",
+    fontWeight: "bold"
+  },
+
+  // 🔥 BOTÓN LIMPIAR
+  clearBtn: {
+    marginTop: 15,
+    backgroundColor: "#E53935",
+    padding: 12,
+    borderRadius: 10,
+    alignItems: "center"
+  },
+
+  clearText: {
+    color: "#fff",
+    fontWeight: "bold"
+  }
 });
